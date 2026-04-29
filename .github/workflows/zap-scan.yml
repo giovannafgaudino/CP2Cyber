@@ -7,10 +7,6 @@ on:
   pull_request:
     branches: [ main, master ]
 
-concurrency:
-  group: zap-scan-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   zap-security-scan:
     name: 🛡️ DAST — OWASP ZAP Baseline
@@ -25,7 +21,7 @@ jobs:
       - name: 📥 Checkout do repositório
         uses: actions/checkout@v4
 
-      - name: 🐍 Configurar Python 3.11
+      - name: 🐍 Configurar Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -59,32 +55,24 @@ jobs:
             || echo "⚠️ Rota /login não respondeu"
 
       - name: 🔍 Executar OWASP ZAP Baseline Scan
-        id: zap_scan
         uses: zaproxy/action-baseline@v0.12.0
         with:
           target: 'http://localhost:8080'
           fail_action: false
           allow_issue_writing: false
+          artifact_name: zap-report-zap
           cmd_options: >-
             -l INFO
             -T 5
 
-      - name: 📁 Renomear relatórios ZAP
+      - name: 📁 Preparar relatórios
         if: always()
         run: |
-          if [ -f report_html.html ]; then
-            cp report_html.html zap-report.html
-          fi
+          if [ -f report_html.html ]; then cp report_html.html zap-report.html; fi
+          if [ -f report_json.json ]; then cp report_json.json zap-report.json; fi
+          if [ -f report_md.md ]; then cp report_md.md zap-report.md; fi
 
-          if [ -f report_json.json ]; then
-            cp report_json.json zap-report.json
-          fi
-
-          if [ -f report_md.md ]; then
-            cp report_md.md zap-report.md
-          fi
-
-      - name: 🚨 Verificar vulnerabilidades altas/críticas
+      - name: 🚨 Verificar vulnerabilidades altas
         if: always()
         run: |
           echo "──────────────────────────────────────────"
@@ -92,7 +80,7 @@ jobs:
           echo "──────────────────────────────────────────"
 
           if [ ! -f zap-report.json ]; then
-            echo "❌ zap-report.json não encontrado — ZAP falhou antes de gerar relatório."
+            echo "❌ zap-report.json não encontrado."
             exit 1
           fi
 
@@ -104,7 +92,6 @@ jobs:
               data = json.load(f)
 
           alerts = []
-
           for site in data.get("site", []):
               alerts.extend(site.get("alerts", []))
 
@@ -145,17 +132,17 @@ jobs:
               print(f"- {name}: {qtd}")
 
           if counts["High"] > 0:
-              print("\n❌ Pipeline falhou: vulnerabilidade de severidade Alta encontrada.")
+              print("\n❌ Pipeline falhou: vulnerabilidade Alta encontrada.")
               sys.exit(1)
 
           print("\n✅ Nenhuma vulnerabilidade Alta encontrada.")
           PYEOF
 
-      - name: 📦 Upload do relatório como artefato
+      - name: 📦 Upload dos relatórios como artefato
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zap-report
+          name: zap-report-final
           path: |
             zap-report.html
             zap-report.json
