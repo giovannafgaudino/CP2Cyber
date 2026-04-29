@@ -1,4 +1,4 @@
-name: 🔐 OWASP ZAP Security Scan
+name: OWASP ZAP Security Scan
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout do repositório
+      - name: Checkout do repositorio
         uses: actions/checkout@v4
 
       - name: Configurar Python
@@ -25,40 +25,46 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Iniciar aplicação vulnerável
+      - name: Iniciar aplicacao vulneravel
         run: |
           echo "Subindo TechShop em background..."
 
           python app/server.py &
           echo $! > /tmp/server.pid
 
-          echo "Aguardando aplicação responder..."
+          echo "Aguardando aplicacao responder..."
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8080 > /dev/null 2>&1; then
-              echo "Aplicação no ar após ${i}s!"
+              echo "Aplicacao no ar apos ${i}s!"
               break
             fi
 
             sleep 1
 
             if [ $i -eq 30 ]; then
-              echo "Timeout: aplicação não respondeu em 30s"
+              echo "Timeout: aplicacao nao respondeu em 30s"
               exit 1
             fi
           done
 
           curl -sf "http://localhost:8080/login?username=test&password=test" > /dev/null \
             && echo "Rota /login OK" \
-            || echo "Rota /login não respondeu"
+            || echo "Rota /login nao respondeu"
+
+      - name: Preparar pasta dos relatorios
+        run: |
+          mkdir -p zap-output
+          chmod 777 zap-output
+          ls -la
 
       - name: Executar OWASP ZAP Baseline Scan via Docker
         run: |
           docker pull ghcr.io/zaproxy/zaproxy:stable
 
-          docker run \
-            -v ${{ github.workspace }}:/zap/wrk/:rw \
-            -w /zap/wrk \
+          docker run --rm \
+            --user root \
             --network=host \
+            -v "${{ github.workspace }}/zap-output:/zap/wrk:rw" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
               -t http://localhost:8080 \
@@ -68,27 +74,41 @@ jobs:
               -l INFO \
               -T 5 || true
 
-          echo "Arquivos gerados:"
-          ls -la
+          echo "Arquivos gerados dentro de zap-output:"
+          ls -la zap-output
 
-      - name: Analisar relatório ZAP
+      - name: Validar se o relatorio foi gerado
         run: |
-          echo "Analisando severidades do relatório ZAP"
+          echo "Validando relatorio JSON..."
 
-          if [ ! -f zap-report.json ]; then
-            echo "zap-report.json não encontrado."
+          if [ ! -f zap-output/zap-report.json ]; then
+            echo "ERRO: zap-output/zap-report.json nao foi encontrado."
+            echo "Conteudo da pasta zap-output:"
+            ls -la zap-output
             exit 1
           fi
 
-          python analise_relatorio.py zap-report.json
+          echo "Relatorio encontrado com sucesso."
 
-      - name: Verificar vulnerabilidades altas
+      - name: Analisar relatorio ZAP
+        run: |
+          echo "Analisando severidades do relatorio ZAP"
+
+          python analise_relatorio.py zap-output/zap-report.json
+
+          if [ -f analise_zap.txt ]; then
+            cp analise_zap.txt zap-output/analise_zap.txt
+          fi
+
+      - name: Verificar vulnerabilidades altas ou criticas
         run: |
           python3 << 'PYEOF'
           import json
           import sys
 
-          with open("zap-report.json", encoding="utf-8") as f:
+          report_path = "zap-output/zap-report.json"
+
+          with open(report_path, encoding="utf-8") as f:
               data = json.load(f)
 
           alerts = []
@@ -99,12 +119,12 @@ jobs:
           critical = 0
 
           for alert in alerts:
-              risk = str(alert.get("riskcode", "0"))
+              riskcode = str(alert.get("riskcode", "0"))
+              riskdesc = str(alert.get("riskdesc", "")).lower()
 
-              if risk == "3":
+              if riskcode == "3":
                   high += 1
 
-              riskdesc = str(alert.get("riskdesc", "")).lower()
               if "critical" in riskdesc:
                   critical += 1
 
@@ -112,22 +132,18 @@ jobs:
           print(f"Critical: {critical}")
 
           if high > 0 or critical > 0:
-              print("Pipeline falhou: vulnerabilidade Alta ou Crítica encontrada.")
+              print("Pipeline falhou: vulnerabilidade Alta ou Critica encontrada.")
               sys.exit(1)
 
-          print("Nenhuma vulnerabilidade Alta ou Crítica encontrada.")
+          print("Nenhuma vulnerabilidade Alta ou Critica encontrada.")
           PYEOF
 
-      - name: Upload dos relatórios como artefato
+      - name: Upload dos relatorios como artefato
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: zapreport
-          path: |
-            zap-report.html
-            zap-report.json
-            zap-report.md
-            analise_zap.txt
+          path: zap-output/
           if-no-files-found: warn
 
       - name: Encerrar servidor
