@@ -9,28 +9,25 @@ on:
 
 jobs:
   zap-security-scan:
-    name: 🛡️ DAST — OWASP ZAP Baseline
+    name: DAST OWASP ZAP Baseline
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     permissions:
       contents: read
-      issues: write
 
     steps:
-      - name: 📥 Checkout do repositório
+      - name: Checkout do repositório
         uses: actions/checkout@v4
 
-      - name: 🐍 Configurar Python
+      - name: Configurar Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 🚀 Iniciar aplicação vulnerável
+      - name: Iniciar aplicação vulnerável
         run: |
-          echo "──────────────────────────────────────────"
-          echo "  Subindo TechShop em background..."
-          echo "──────────────────────────────────────────"
+          echo "Subindo TechShop em background..."
 
           python app/server.py &
           echo $! > /tmp/server.pid
@@ -38,52 +35,51 @@ jobs:
           echo "Aguardando aplicação responder..."
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8080 > /dev/null 2>&1; then
-              echo "✅ Aplicação no ar após ${i}s!"
+              echo "Aplicação no ar após ${i}s!"
               break
             fi
 
             sleep 1
 
             if [ $i -eq 30 ]; then
-              echo "❌ Timeout: aplicação não respondeu em 30s"
+              echo "Timeout: aplicação não respondeu em 30s"
               exit 1
             fi
           done
 
           curl -sf "http://localhost:8080/login?username=test&password=test" > /dev/null \
-            && echo "✅ Rota /login OK" \
-            || echo "⚠️ Rota /login não respondeu"
+            && echo "Rota /login OK" \
+            || echo "Rota /login não respondeu"
 
-      - name: 🔍 Executar OWASP ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.12.0
-        with:
-          target: 'http://localhost:8080'
-          fail_action: false
-          allow_issue_writing: false
-          artifact_name: zap-report-zap
-          cmd_options: >-
-            -l INFO
-            -T 5
-
-      - name: 📁 Preparar relatórios
-        if: always()
+      - name: Executar OWASP ZAP Baseline Scan via Docker
         run: |
-          if [ -f report_html.html ]; then cp report_html.html zap-report.html; fi
-          if [ -f report_json.json ]; then cp report_json.json zap-report.json; fi
-          if [ -f report_md.md ]; then cp report_md.md zap-report.md; fi
+          docker pull ghcr.io/zaproxy/zaproxy:stable
 
-      - name: 🚨 Verificar vulnerabilidades altas
-        if: always()
+          docker run \
+            -v ${{ github.workspace }}:/zap/wrk/:rw \
+            --network=host \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+              -t http://localhost:8080 \
+              -J zap-report.json \
+              -w zap-report.md \
+              -r zap-report.html \
+              -l INFO \
+              -T 5 || true
+
+      - name: Analisar relatório ZAP
         run: |
-          echo "──────────────────────────────────────────"
-          echo "  Analisando severidades do relatório ZAP"
-          echo "──────────────────────────────────────────"
+          echo "Analisando severidades do relatório ZAP"
 
           if [ ! -f zap-report.json ]; then
-            echo "❌ zap-report.json não encontrado."
+            echo "zap-report.json não encontrado."
             exit 1
           fi
 
+          python analise_relatorio.py zap-report.json
+
+      - name: Verificar vulnerabilidades altas
+        run: |
           python3 << 'PYEOF'
           import json
           import sys
@@ -95,67 +91,45 @@ jobs:
           for site in data.get("site", []):
               alerts.extend(site.get("alerts", []))
 
-          counts = {
-              "High": 0,
-              "Medium": 0,
-              "Low": 0,
-              "Informational": 0
-          }
-
-          common = {}
+          high = 0
+          critical = 0
 
           for alert in alerts:
               risk = str(alert.get("riskcode", "0"))
-              name = alert.get("name", "Desconhecido")
 
               if risk == "3":
-                  counts["High"] += 1
-              elif risk == "2":
-                  counts["Medium"] += 1
-              elif risk == "1":
-                  counts["Low"] += 1
-              else:
-                  counts["Informational"] += 1
+                  high += 1
 
-              common[name] = common.get(name, 0) + 1
+              riskdesc = str(alert.get("riskdesc", "")).lower()
+              if "critical" in riskdesc:
+                  critical += 1
 
-          total = sum(counts.values())
+          print(f"High: {high}")
+          print(f"Critical: {critical}")
 
-          print(f"Total de alertas: {total}")
-          print(f"High: {counts['High']}")
-          print(f"Medium: {counts['Medium']}")
-          print(f"Low: {counts['Low']}")
-          print(f"Informational: {counts['Informational']}")
-
-          print("\nVulnerabilidades mais comuns:")
-          for name, qtd in sorted(common.items(), key=lambda x: x[1], reverse=True)[:5]:
-              print(f"- {name}: {qtd}")
-
-          if counts["High"] > 0:
-              print("\n❌ Pipeline falhou: vulnerabilidade Alta encontrada.")
+          if high > 0 or critical > 0:
+              print("Pipeline falhou: vulnerabilidade Alta ou Crítica encontrada.")
               sys.exit(1)
 
-          print("\n✅ Nenhuma vulnerabilidade Alta encontrada.")
+          print("Nenhuma vulnerabilidade Alta ou Crítica encontrada.")
           PYEOF
 
-      - name: 📦 Upload dos relatórios como artefato
+      - name: Upload dos relatórios como artefato
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zap-report-final
+          name: zapreport
           path: |
             zap-report.html
             zap-report.json
             zap-report.md
-            report_html.html
-            report_json.json
-            report_md.md
+            analise_zap.txt
           if-no-files-found: warn
 
-      - name: 🧹 Encerrar servidor
+      - name: Encerrar servidor
         if: always()
         run: |
           if [ -f /tmp/server.pid ]; then
             kill $(cat /tmp/server.pid)
-            echo "✅ Servidor encerrado."
+            echo "Servidor encerrado."
           fi
